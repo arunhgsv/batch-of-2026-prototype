@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Collage — Fullscreen Zoom, Parallax, GSAP Physics</title>
+
+<!-- GSAP CDN -->
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.2/dist/gsap.min.js"></script>
+
+<style>
+  :root{
+    --bg:#f6f6f8;
+    --card-bg:#e6e6e7;
+    --border:#ffffff;
+    --shadow: 0 10px 30px rgba(20,20,30,0.12);
+    --accent:#7b61ff;
+    --panel-w:320px;
+  }
+  html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;color:#111;background:var(--bg);-webkit-font-smoothing:antialiased;overflow:hidden;}
+  .app{
+    width:100vw;height:100vh;display:grid;
+    grid-template-columns: 1fr var(--panel-w);
+    gap:18px;
+    box-sizing:border-box;padding:18px;
+    align-items:stretch;
+  }
+
+  /* MAIN COLLAGE AREA */
+  .canvas{
+    position:relative;
+    width:100%;
+    height:100%;
+    border-radius:14px;
+    background: linear-gradient(180deg,#fff,#fbfbfd);
+    box-shadow:var(--shadow);
+    overflow:hidden;
+    touch-action: none; /* prevent gesture scrolling interfering with interactions */
+  }
+
+  /* Floating container that receives parallax transform */
+  .parallax-wrap{
+    position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;
+  }
+
+  /* actual collage stage where shapes live */
+  .stage{
+    position:absolute;left:0;top:0;right:0;bottom:0;padding:28px;pointer-events:auto;
+    display:block;
+  }
+
+  .shape {
+    position:absolute;
+    border-radius:8px;
+    overflow:hidden;
+    border:6px solid var(--border);
+    box-shadow: 0 18px 40px rgba(10,10,20,0.12);
+    cursor:pointer;
+    will-change: transform, filter, opacity;
+    filter: grayscale(100%) contrast(.98) brightness(.97);
+  }
+
+  .shape img{
+    width:100%;height:100%;object-fit:cover;display:block;
+    transform-origin:center center;
+  }
+
+  /* triangle implemented with clip-path so images show correctly */
+  .shape.tri { clip-path: polygon(50% 0%, 0% 100%, 100% 100%); border-radius:6px; }
+
+  /* active / dim styles (we animate via GSAP but keep base rules) */
+  .shape.dimmed { opacity:0.35; }
+  .shape.active { filter: none; z-index:80; }
+
+  /* category panel */
+  .panel{
+    background:#fff;border-radius:12px;padding:14px;box-shadow:var(--shadow);
+    display:flex;flex-direction:column;gap:10px;align-items:stretch;height:100%;
+  }
+  .panel h3{margin:4px 0 8px 0;font-size:15px;font-weight:600}
+  .slots{display:flex;flex-direction:column;gap:8px;overflow:auto;padding-right:6px;}
+  .slot{
+    min-height:68px;border-radius:10px;border:2px dashed #f0f0f0;
+    display:flex;align-items:center;justify-content:center;padding:8px;background:linear-gradient(#fff,#fbfbff);
+    position:relative;overflow:hidden;
+  }
+  .slot .label{position:absolute;left:8px;top:6px;font-size:12px;color:#777}
+  .slot .thumb{width:72px;height:56px;border-radius:8px;border:3px solid #fff;box-shadow:0 8px 20px rgba(0,0,0,0.08);object-fit:cover}
+
+  /* overlay (fullscreen zoom) */
+  .overlay{
+    position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:9999;
+    background:linear-gradient(180deg, rgba(12,12,14,0.36), rgba(12,12,14,0.48));
+    backdrop-filter: blur(4px);
+  }
+  .overlay.active{display:flex;}
+  .viewer{
+    width:min(92vw,1100px);height:min(82vh,820px);background:#111;border-radius:12px;overflow:hidden;position:relative;box-shadow:0 40px 120px rgba(0,0,0,0.6);
+    display:flex;align-items:center;justify-content:center;
+  }
+  .viewer img{max-width:100%;max-height:100%;object-fit:contain;display:block}
+  .viewer .meta{
+    position:absolute;left:18px;bottom:18px;color:#fff;font-size:14px;background:linear-gradient(90deg, rgba(0,0,0,0.35), rgba(0,0,0,0.12));padding:8px 12px;border-radius:8px;
+  }
+  .close-btn{
+    position:absolute;right:18px;top:18px;background:var(--accent);color:#fff;padding:10px 12px;border-radius:10px;border:none;cursor:pointer;font-weight:600;box-shadow:0 12px 30px rgba(123,97,255,0.22)
+  }
+  .to-slot-btn{
+    position:absolute;right:18px;bottom:18px;background:transparent;border:2px solid #fff;color:#fff;padding:8px 10px;border-radius:8px;cursor:pointer
+  }
+
+  /* responsive: collapse to single column on small screens */
+  @media (max-width:960px){
+    .app{ grid-template-columns: 1fr; padding:10px; gap:10px; }
+    .panel{ order:2; height:220px; display:flex; }
+    .canvas{ order:1; height: calc(100vh - 260px); }
+    .overlay .viewer{ width:96vw; height:76vh; }
+  }
+
+  /* small UI polish */
+  .hint{font-size:12px;color:#666;margin-top:6px}
+</style>
+</head>
+<body>
+  <div class="app">
+
+    <!-- COLLAGE / CANVAS -->
+    <div class="canvas" id="canvas">
+      <div class="parallax-wrap" id="parallax">
+        <div class="stage" id="stage">
+          <!-- Shapes with data attributes: data-cat, data-title, data-src -->
+          <div class="shape" id="s1" data-cat="Gallery" data-title="La FEST 2025" data-src="https://picsum.photos/id/1018/1600/1200"
+               style="width:28vw;height:28vw;left:6%;top:8%;">
+            <img src="https://picsum.photos/id/1018/800/800" alt="">
+          </div>
+
+          <div class="shape tri" id="s2" data-cat="Events" data-title="Stage Moments" data-src="https://picsum.photos/id/1015/1600/1200"
+               style="width:30vw;height:30vw;left:36%;top:6%;">
+            <img src="https://picsum.photos/id/1015/900/900" alt="">
+          </div>
+
+          <div class="shape" id="s3" data-cat="Tour" data-title="College Tour" data-src="https://picsum.photos/id/1025/1600/1200"
+               style="width:20vw;height:32vw;left:62%;top:8%;">
+            <img src="https://picsum.photos/id/1025/900/1200" alt="">
+          </div>
+
+          <div class="shape" id="s4" data-cat="Bloopers" data-title="Bloopers Reel" data-src="https://picsum.photos/id/1021/1600/1200"
+               style="width:34vw;height:22vw;left:10%;top:42%;">
+            <img src="https://picsum.photos/id/1021/1100/800" alt="">
+          </div>
+
+          <div class="shape" id="s5" data-cat="ClassPhotos" data-title="Senior Class" data-src="https://picsum.photos/id/1027/1600/1200"
+               style="width:30vw;height:30vw;left:56%;top:50%;">
+            <img src="https://picsum.photos/id/1027/1000/900" alt="">
+          </div>
+
+          <div class="shape" id="s6" data-cat="Memories" data-title="Late Night Talks" data-src="https://picsum.photos/id/1035/1600/1200"
+               style="width:26vw;height:18vw;left:30%;top:56%;">
+            <img src="https://picsum.photos/id/1035/1000/700" alt="">
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- CATEGORY PANEL -->
+    <div class="panel">
+      <h3>Categories</h3>
+      <div class="slots" id="slots">
+        <div class="slot" data-slot="Gallery"><div class="label">Gallery</div></div>
+        <div class="slot" data-slot="Events"><div class="label">Events</div></div>
+        <div class="slot" data-slot="Tour"><div class="label">Tour</div></div>
+        <div class="slot" data-slot="Bloopers"><div class="label">Bloopers</div></div>
+        <div class="slot" data-slot="ClassPhotos"><div class="label">Class Photos</div></div>
+        <div class="slot" data-slot="Memories"><div class="label">Memories</div></div>
+      </div>
+      <div class="hint">Tap/click a card to zoom. Use 'Send to category' inside viewer to animate into category slot.</div>
+    </div>
+
+  </div>
+
+  <!-- OVERLAY VIEWER -->
+  <div class="overlay" id="overlay" aria-hidden="true">
+    <div class="viewer" id="viewer">
+      <img id="viewerImg" src="" alt="">
+      <div class="meta" id="viewerMeta"></div>
+      <button class="to-slot-btn" id="toSlotBtn">Send to category</button>
+      <button class="close-btn" id="closeBtn">Close</button>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const shapes = Array.from(document.querySelectorAll('.shape'));
+  const overlay = document.getElementById('overlay');
+  const viewerImg = document.getElementById('viewerImg');
+  const viewerMeta = document.getElementById('viewerMeta');
+  const closeBtn = document.getElementById('closeBtn');
+  const toSlotBtn = document.getElementById('toSlotBtn');
+  const slots = Array.from(document.querySelectorAll('.slot'));
+  const parallax = document.getElementById('parallax');
+  const stage = document.getElementById('stage');
+  const canvas = document.getElementById('canvas');
+
+  let activeShape = null;
+  let floatTweens = [];
+
+  /* ---------- Utility: get center point of element ---------- */
+  function centerOf(el){
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width/2, y: r.top + r.height/2, w: r.width, h: r.height, rect: r };
+  }
+
+  /* ---------- Floating animation ---------- */
+  function startFloating(){
+    // kill previous
+    floatTweens.forEach(t => t.kill && t.kill());
+    floatTweens = [];
+    shapes.forEach((s,i)=>{
+      // random small offsets and durations
+      const ry = (Math.random()*18 - 9); // px
+      const rx = (Math.random()*18 - 9);
+      const dur = 6 + Math.random()*6;
+      const t = gsap.to(s, {
+        x: rx, y: ry,
+        ease: "sine.inOut",
+        yoyo: true,
+        repeat: -1,
+        duration: dur,
+        repeatRefresh: true,
+        delay: Math.random()*1.2
+      });
+      floatTweens.push(t);
+    });
+  }
+
+  /* ---------- Parallax based on pointer ---------- */
+  function bindParallax(){
+    // desktop pointer
+    window.addEventListener('pointermove', (e)=>{
+      const cx = window.innerWidth/2;
+      const cy = window.innerHeight/2;
+      const dx = (e.clientX - cx) / cx; // -1..1
+      const dy = (e.clientY - cy) / cy;
+      // subtle translate
+      gsap.to(parallax, { x: dx * -18, y: dy * -12, duration: 0.8, ease:"power2.out" });
+      // shapes parallax (depth by size)
+      shapes.forEach(s=>{
+        const r = s.getBoundingClientRect();
+        const depth = (r.width * r.height) / (window.innerWidth * window.innerHeight);
+        const mul = 18 * depth;
+        gsap.to(s, { x: `+=${dx * mul * -1}`, y: `+=${dy * mul * -1}`, duration: 0.9, overwrite: false, ease:"sine.out" });
+      });
+    });
+
+    // mobile tilt (optional) — use deviceorientation if available
+    if(window.DeviceOrientationEvent){
+      window.addEventListener('deviceorientation', (ev)=>{
+        // gamma (-90 .. 90) left-right, beta (-180..180) front-back
+        const gx = ev.gamma || 0;
+        const by = ev.beta || 0;
+        const dx = gx / 90;
+        const dy = by / 180;
+        gsap.to(parallax, { x: dx * 20, y: dy * 10, duration: 0.8, ease:"power2.out" });
+      });
+    }
+  }
+
+  /* ---------- On hover/tap: push others away (GSAP physics-like) ---------- */
+  function pushOthersFrom(target){
+    const tCenter = centerOf(target);
+    shapes.forEach(s=>{
+      if(s === target) return;
+      const c = centerOf(s);
+      // Compute vector from target -> s
+      let vx = c.x - tCenter.x;
+      let vy = c.y - tCenter.y;
+      const dist = Math.hypot(vx, vy) || 1;
+      // Normalize & scale by amount (function of distance)
+      const push = Math.max(120, 200 - dist*0.25); // px
+      vx = (vx / dist) * push;
+      vy = (vy / dist) * push;
+      // random jitter
+      const jitter = (Math.random()*30 - 15);
+      gsap.to(s, { x: vx + jitter, y: vy + jitter, scale:0.9, opacity:0.42, duration:0.5, ease:"power3.out" });
+      s.classList.add('dimmed');
+    });
+    // bring target forward and colorize
+    gsap.to(target, { scale: 1.12, zIndex: 200, duration:0.36, ease:"power2.out" });
+    target.classList.add('active');
+  }
+
+  function restoreAll(){
+    shapes.forEach(s=>{
+      gsap.to(s, { x:0, y:0, scale:1, opacity:1, duration:0.5, ease:"power3.out" });
+      s.classList.remove('dimmed','active');
+    });
+  }
+
+  /* ---------- Zoom to fullscreen viewer ---------- */
+  function openViewerFrom(shape){
+    if(!shape) return;
+    activeShape = shape;
+    const src = shape.dataset.src || shape.querySelector('img')?.src;
+    const title = shape.dataset.title || shape.dataset.cat || '';
+    viewerImg.src = src;
+    viewerMeta.textContent = title;
+    overlay.classList.add('active');
+    overlay.setAttribute('aria-hidden','false');
+
+    // animate a smooth scale from shape rect to center viewer using FLIP-ish approach
+    const sRect = shape.getBoundingClientRect();
+    const vRect = document.getElementById('viewer').getBoundingClientRect();
+
+    // create clone
+    const clone = shape.cloneNode(true);
+    clone.style.position = 'fixed';
+    clone.style.margin = 0;
+    clone.style.left = sRect.left + 'px';
+    clone.style.top = sRect.top + 'px';
+    clone.style.width = sRect.width + 'px';
+    clone.style.height = sRect.height + 'px';
+    clone.style.zIndex = 10010;
+    clone.style.boxShadow = '0 40px 120px rgba(0,0,0,0.6)';
+    document.body.appendChild(clone);
+
+    // hide viewer content until animation ends
+    document.getElementById('viewerImg').style.opacity = 0;
+    document.getElementById('viewerMeta').style.opacity = 0;
+    toSlotBtn.style.opacity = 0;
+    closeBtn.style.opacity = 0;
+
+    // animate clone to viewer rect
+    gsap.to(clone, {
+      left: vRect.left + 'px',
+      top: vRect.top + 'px',
+      width: vRect.width + 'px',
+      height: vRect.height + 'px',
+      duration: 0.64,
+      ease: "power4.out",
+      onComplete: ()=> {
+        // reveal actual viewer image
+        document.getElementById('viewerImg').style.opacity = 1;
+        document.getElementById('viewerMeta').style.opacity = 1;
+        toSlotBtn.style.opacity = 1;
+        closeBtn.style.opacity = 1;
+        // remove clone
+        clone.remove();
+      }
+    });
+
+    // dim other shapes (pushing)
+    pushOthersFrom(shape);
+  }
+
+  function closeViewer(){
+    // animate viewer out and restore
+    overlay.classList.remove('active');
+    overlay.setAttribute('aria-hidden','true');
+    viewerImg.src = '';
+    restoreAll();
+  }
+
+  /* ---------- Send to category slot animation ---------- */
+  function sendToSlot(){
+    if(!activeShape) return;
+    const cat = activeShape.dataset.cat || 'Gallery';
+    const slot = slots.find(s => s.dataset.slot === cat) || slots[0];
+    if(!slot) { closeViewer(); return; }
+
+    // create a floating clone of viewer image to fly to slot
+    const vRect = document.getElementById('viewer').getBoundingClientRect();
+    const slotRect = slot.getBoundingClientRect();
+
+    const fly = document.createElement('img');
+    fly.src = viewerImg.src;
+    fly.style.position = 'fixed';
+    fly.style.left = vRect.left + 'px';
+    fly.style.top = vRect.top + 'px';
+    fly.style.width = vRect.width + 'px';
+    fly.style.height = vRect.height + 'px';
+    fly.style.objectFit = 'cover';
+    fly.style.zIndex = 12000;
+    fly.style.borderRadius = '10px';
+    fly.style.boxShadow = '0 40px 120px rgba(0,0,0,0.6)';
+    document.body.appendChild(fly);
+
+    // animate clone into slot (scale down)
+    gsap.to(fly, {
+      left: slotRect.left + (slotRect.width/2 - 54) + 'px',
+      top: slotRect.top + (slotRect.height/2 - 36) + 'px',
+      width: '108px',
+      height: '72px',
+      duration: 0.78,
+      ease: "power4.inOut",
+      onComplete: ()=> {
+        // place thumbnail inside slot
+        slot.innerHTML = '';
+        const thumb = document.createElement('img');
+        thumb.className = 'thumb';
+        thumb.src = fly.src;
+        slot.appendChild(thumb);
+        // cleanup
+        fly.remove();
+        // remove viewer and mark shape as moved
+        closeViewer();
+        activeShape.dataset.moved = 'true';
+      }
+    });
+
+    // small bounce for the original shape position
+    gsap.fromTo(activeShape, { scale:1.05 }, { scale:0.92, duration:0.45, yoyo:true, repeat:1, ease:'back.out(3)' });
+  }
+
+  /* ---------- Interaction binding ---------- */
+  shapes.forEach(s=>{
+    // pointer enter -> push others slightly
+    s.addEventListener('pointerenter', (ev)=>{
+      pushOthersFrom(s);
+    });
+    // pointer leave -> restore
+    s.addEventListener('pointerleave', (ev)=>{
+      // only restore if overlay not active
+      if(!overlay.classList.contains('active')) restoreAll();
+    });
+
+    // click / tap -> open viewer
+    s.addEventListener('pointerdown', (ev)=>{
+      ev.stopPropagation();
+      openViewerFrom(s);
+    });
+  });
+
+  // close / send buttons
+  closeBtn.addEventListener('click', closeViewer);
+  toSlotBtn.addEventListener('click', sendToSlot);
+
+  // clicking outside on canvas should restore shapes if overlay not open
+  canvas.addEventListener('pointerdown', (ev)=>{
+    if(!overlay.classList.contains('active')) restoreAll();
+  });
+
+  // initial animations
+  startFloating();
+  bindParallax();
+
+  // on resize -> recompute arrangement (we simply restart floats and clear transforms)
+  function onResize(){
+    // clear transforms placed by pushers and parallax
+    shapes.forEach(s => gsap.set(s, { clearProps: "x,y,scale,opacity" }));
+    gsap.set(parallax, { clearProps: "x,y" });
+    startFloating();
+  }
+  window.addEventListener('resize', gsap.utils.debounce(onResize, 160));
+
+  // Accessibility: ESC closes viewer
+  window.addEventListener('keydown', (e) => {
+    if(e.key === 'Escape') closeViewer();
+  });
+
+  // initial small stagger entrance
+  gsap.from(shapes, { opacity:0, y:20, scale:0.98, duration:0.9, stagger:0.06, ease:"power3.out" });
+
+})();
+</script>
+</body>
+</html>
